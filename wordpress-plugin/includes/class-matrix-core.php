@@ -25,6 +25,9 @@ class Matrix_MLM_Core {
 
         // Initialize Fintava gateway (registers AJAX hooks)
         new Matrix_MLM_Fintava();
+
+        // Initialize Fintava Card (registers card AJAX hooks)
+        new Matrix_MLM_Fintava_Card();
     }
 
     private function define_hooks() {
