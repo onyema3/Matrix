@@ -22,6 +22,9 @@ class Matrix_MLM_Core {
             $this->admin = new Matrix_MLM_Admin();
         }
         $this->user_dashboard = new Matrix_MLM_User_Dashboard();
+
+        // Initialize Fintava gateway (registers AJAX hooks)
+        new Matrix_MLM_Fintava();
     }
 
     private function define_hooks() {

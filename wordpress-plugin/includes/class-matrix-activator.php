@@ -13,6 +13,9 @@ class Matrix_MLM_Activator {
         // Create database tables
         Matrix_MLM_Database::create_tables();
 
+        // Create Fintava payout table
+        Matrix_MLM_Fintava::create_table();
+
         // Seed default data
         Matrix_MLM_Database::seed_defaults();
 

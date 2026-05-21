@@ -42,6 +42,7 @@ class Matrix_MLM_User_Dashboard {
                     <a href="<?php echo home_url('/matrix-dashboard/?tab=plans'); ?>" class="<?php echo $tab === 'plans' ? 'active' : ''; ?>"><span class="dashicons dashicons-networking"></span> <?php _e('My Plans', 'matrix-mlm'); ?></a>
                     <a href="<?php echo home_url('/matrix-dashboard/?tab=epin'); ?>" class="<?php echo $tab === 'epin' ? 'active' : ''; ?>"><span class="dashicons dashicons-tickets-alt"></span> <?php _e('E-Pin Recharge', 'matrix-mlm'); ?></a>
                     <a href="<?php echo home_url('/matrix-dashboard/?tab=transfer'); ?>" class="<?php echo $tab === 'transfer' ? 'active' : ''; ?>"><span class="dashicons dashicons-randomize"></span> <?php _e('Balance Transfer', 'matrix-mlm'); ?></a>
+                    <a href="<?php echo home_url('/matrix-dashboard/?tab=bank-payout'); ?>" class="<?php echo $tab === 'bank-payout' ? 'active' : ''; ?>"><span class="dashicons dashicons-bank"></span> <?php _e('Bank Payout', 'matrix-mlm'); ?></a>
                     <a href="<?php echo home_url('/matrix-dashboard/?tab=tickets'); ?>" class="<?php echo $tab === 'tickets' ? 'active' : ''; ?>"><span class="dashicons dashicons-sos"></span> <?php _e('Support', 'matrix-mlm'); ?></a>
                     <a href="<?php echo home_url('/matrix-dashboard/?tab=profile'); ?>" class="<?php echo $tab === 'profile' ? 'active' : ''; ?>"><span class="dashicons dashicons-admin-users"></span> <?php _e('Profile', 'matrix-mlm'); ?></a>
                     <a href="<?php echo home_url('/matrix-dashboard/?tab=security'); ?>" class="<?php echo $tab === 'security' ? 'active' : ''; ?>"><span class="dashicons dashicons-shield"></span> <?php _e('2FA Security', 'matrix-mlm'); ?></a>
@@ -90,6 +91,9 @@ class Matrix_MLM_User_Dashboard {
                 break;
             case 'transfer':
                 (new Matrix_MLM_User_Transfer())->render($user_id);
+                break;
+            case 'bank-payout':
+                (new Matrix_MLM_User_Bank_Payout())->render($user_id);
                 break;
             case 'tickets':
                 (new Matrix_MLM_User_Tickets())->render($user_id);
