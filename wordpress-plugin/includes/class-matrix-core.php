@@ -90,6 +90,10 @@ class Matrix_MLM_Core {
             'nonce' => wp_create_nonce('matrix_mlm_nonce'),
             'currency' => get_option('matrix_mlm_currency_symbol', '₦'),
             'siteUrl' => home_url(),
+            'paystackKey' => (new Matrix_MLM_Paystack())->get_public_key(),
+            'flutterwaveKey' => (new Matrix_MLM_Flutterwave())->get_public_key(),
+            'userEmail' => is_user_logged_in() ? wp_get_current_user()->user_email : '',
+            'userName' => is_user_logged_in() ? wp_get_current_user()->display_name : '',
         ]);
     }
 
@@ -537,7 +541,11 @@ class Matrix_MLM_Core {
 
     public function handle_payment_verify($request) {
         $gateway = $request->get_param('gateway');
-        $reference = $request->get_param('reference');
+        $reference = $request->get_param('reference') ?? $request->get_param('tx_ref') ?? '';
+
+        if (empty($reference)) {
+            return new WP_REST_Response(['status' => 'error', 'message' => 'Reference is required'], 400);
+        }
 
         if ($gateway === 'paystack') {
             $paystack = new Matrix_MLM_Paystack();
@@ -547,7 +555,7 @@ class Matrix_MLM_Core {
             return $flutterwave->verify_payment($reference);
         }
 
-        return new WP_REST_Response(['status' => 'error'], 400);
+        return new WP_REST_Response(['status' => 'error', 'message' => 'Unsupported gateway'], 400);
     }
 
     public function add_rewrite_rules() {

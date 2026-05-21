@@ -66,7 +66,14 @@ class Matrix_MLM_User_Dashboard {
                 $this->render_overview($user_id);
                 break;
             case 'deposits':
-                (new Matrix_MLM_User_Deposits())->render_deposit_form($user_id);
+                $deposits_handler = new Matrix_MLM_User_Deposits();
+                // Check if returning from payment gateway
+                $verify_result = $deposits_handler->maybe_verify_payment();
+                if ($verify_result) {
+                    $alert_class = $verify_result['status'] === 'success' ? 'success' : ($verify_result['status'] === 'error' ? 'danger' : 'info');
+                    echo '<div class="matrix-alert matrix-alert-' . $alert_class . '">' . esc_html($verify_result['message']) . '</div>';
+                }
+                $deposits_handler->render_deposit_form($user_id);
                 break;
             case 'deposit-history':
                 (new Matrix_MLM_User_Deposits())->render_history($user_id);
