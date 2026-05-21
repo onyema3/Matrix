@@ -607,30 +607,48 @@ class Matrix_MLM_Fintava {
     // =========================================================================
 
     /**
-     * Handle Fintava webhook notifications for transfer status updates
+     * Handle Fintava webhook notifications
+     * 
+     * Event types from Fintava:
+     * - wallet_to_wallet_transfer_v2: Transfer between wallets completed
+     * - account_funded: Virtual wallet received a deposit
+     * 
+     * Signature verification uses x-fintava-signature header with HMAC SHA-512
      */
     public function handle_webhook($request) {
         $payload = $request->get_body();
         $signature = $request->get_header('x-fintava-signature');
 
-        // Verify webhook signature
+        // Verify webhook signature (HMAC SHA-512 of raw body)
         $webhook_secret = get_option('matrix_mlm_fintava_webhook_secret', '');
         if (!empty($webhook_secret)) {
             $computed_signature = hash_hmac('sha512', $payload, $webhook_secret);
             if (!hash_equals($computed_signature, $signature ?? '')) {
-                return new WP_REST_Response(['status' => 'error', 'message' => 'Invalid signature'], 401);
+                return new WP_REST_Response(['error' => 'Invalid signature'], 401);
             }
         }
 
         $event = json_decode($payload, true);
         if (!$event) {
-            return new WP_REST_Response(['status' => 'error', 'message' => 'Invalid payload'], 400);
+            return new WP_REST_Response(['error' => 'Invalid payload'], 400);
         }
 
-        $event_type = $event['event'] ?? '';
+        // Fintava uses 'type' field for event type (not 'event')
+        $event_type = $event['type'] ?? '';
         $data = $event['data'] ?? [];
 
         switch ($event_type) {
+            case 'wallet_to_wallet_transfer_v2':
+                // A transfer between wallets was completed (e.g., merchant → user payout)
+                $this->handle_transfer_success($data);
+                break;
+
+            case 'account_funded':
+                // A virtual wallet received funds (e.g., bank transfer into user's Fintava wallet)
+                $this->handle_account_funded($data);
+                break;
+
+            // Legacy/fallback event types
             case 'transfer.success':
             case 'transfer.completed':
                 $this->handle_transfer_success($data);
@@ -641,7 +659,7 @@ class Matrix_MLM_Fintava {
                 break;
         }
 
-        return new WP_REST_Response(['status' => 'success'], 200);
+        return new WP_REST_Response(['received' => true], 200);
     }
 
     /**
@@ -730,6 +748,62 @@ class Matrix_MLM_Fintava {
         Matrix_MLM_Notifications::send_admin_notification(
             'fintava_payout_failed',
             sprintf(__('Bank payout FAILED and refunded. Ref: %s, Reason: %s', 'matrix-mlm'), $reference, $reason)
+        );
+    }
+
+    /**
+     * Handle account_funded webhook event
+     * 
+     * This is triggered when a user's Fintava virtual wallet receives funds
+     * (e.g., someone transfers money to the user's virtual account number).
+     * 
+     * Note: This does NOT credit the Matrix wallet automatically.
+     * The Fintava wallet is a separate external account.
+     */
+    private function handle_account_funded($data) {
+        global $wpdb;
+
+        $wallet_id = $data['wallet_id'] ?? $data['account_id'] ?? '';
+        $amount = floatval($data['amount'] ?? 0);
+        $reference = $data['reference'] ?? $data['transaction_reference'] ?? '';
+        $sender = $data['sender_name'] ?? $data['sender'] ?? 'Unknown';
+
+        if (empty($wallet_id) || $amount <= 0) {
+            return;
+        }
+
+        // Find the user who owns this wallet
+        $wallet_record = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}matrix_fintava_wallets WHERE wallet_id = %s AND status = 'active'",
+            $wallet_id
+        ));
+
+        if (!$wallet_record) {
+            return;
+        }
+
+        // Log the incoming fund event
+        $currency = get_option('matrix_mlm_currency_symbol', '₦');
+
+        // Notify the user that their Fintava wallet received funds
+        Matrix_MLM_Notifications::send_deposit_notification(
+            $wallet_record->user_id,
+            $amount,
+            'completed'
+        );
+
+        // Notify admin
+        $user = get_userdata($wallet_record->user_id);
+        Matrix_MLM_Notifications::send_admin_notification(
+            'account_funded',
+            sprintf(
+                __('Fintava wallet funded: %s%s received by %s (wallet: %s) from %s. Ref: %s', 'matrix-mlm'),
+                $currency, number_format($amount, 2),
+                $user ? $user->user_login : '#' . $wallet_record->user_id,
+                $wallet_record->account_number,
+                $sender,
+                $reference
+            )
         );
     }
 
