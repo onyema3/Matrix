@@ -1,15 +1,17 @@
 <?php
 /**
- * Fintava Payment Gateway - Bank Transfer/Payout
+ * Fintava Pay Gateway - Merchant Bank Credit & Virtual Wallet
  * 
- * Integrates with the Fintava API (https://fintava.readme.io/reference/getting-started-with-fintava-api)
- * to allow users to transfer funds from their Matrix wallet to their bank accounts.
+ * Integrates with the Fintava Pay API (https://dev.fintavapay.com/api/dev/)
+ * to allow users to transfer funds from their Matrix wallet to their bank accounts
+ * via the merchant credit endpoint.
  * 
  * Endpoints used:
- * - GET  /banks           - List supported banks
- * - POST /resolve-account - Verify bank account (name lookup)
- * - POST /transfer        - Initiate bank transfer/payout
- * - GET  /transfer/:id    - Check transfer status
+ * - GET  /merchant/balance        - Get merchant wallet balance
+ * - POST /bank/credit/merchant    - Credit a bank account (payout from merchant)
+ * - POST /virtual-wallet/generate - Generate virtual wallet for user
+ * - GET  /banks                   - List supported banks
+ * - POST /resolve-account         - Verify bank account (name lookup)
  */
 
 if (!defined('ABSPATH')) {
@@ -36,12 +38,8 @@ class Matrix_MLM_Fintava {
         $this->secret_key = get_option('matrix_mlm_fintava_secret_key', '');
         $this->public_key = get_option('matrix_mlm_fintava_public_key', '');
 
-        // Set base URL based on environment
-        if ($this->environment === 'live') {
-            $this->base_url = 'https://api.fintava.com/v1';
-        } else {
-            $this->base_url = 'https://sandbox.fintava.com/v1';
-        }
+        // Default base URL: Fintava Pay API
+        $this->base_url = 'https://dev.fintavapay.com/api/dev';
 
         // Allow override via settings
         $custom_url = get_option('matrix_mlm_fintava_base_url', '');
@@ -58,6 +56,7 @@ class Matrix_MLM_Fintava {
         add_action('wp_ajax_matrix_fintava_resolve_account', [$this, 'ajax_resolve_account']);
         add_action('wp_ajax_matrix_fintava_initiate_transfer', [$this, 'ajax_initiate_transfer']);
         add_action('wp_ajax_matrix_fintava_check_status', [$this, 'ajax_check_transfer_status']);
+        add_action('wp_ajax_matrix_fintava_merchant_balance', [$this, 'ajax_get_merchant_balance']);
 
         // Virtual Wallet AJAX handlers
         add_action('wp_ajax_matrix_fintava_create_virtual_wallet', [$this, 'ajax_create_virtual_wallet']);
@@ -213,6 +212,105 @@ class Matrix_MLM_Fintava {
         return new WP_Error(
             'fintava_status_error',
             $response['message'] ?? __('Could not fetch transfer status', 'matrix-mlm')
+        );
+    }
+
+    /**
+     * Get merchant wallet balance
+     * GET /merchant/balance
+     * 
+     * Returns the current balance of the merchant's Fintava wallet.
+     * This is the pool from which user payouts are funded.
+     * 
+     * @return array|WP_Error Balance data or error
+     */
+    public function get_merchant_balance() {
+        $response = $this->make_request('GET', '/merchant/balance');
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        if (isset($response['status']) && $response['status'] === true && isset($response['data'])) {
+            return $response['data'];
+        }
+
+        // Some API responses return balance directly
+        if (isset($response['balance'])) {
+            return [
+                'balance' => floatval($response['balance']),
+                'currency' => $response['currency'] ?? 'NGN',
+                'available_balance' => floatval($response['available_balance'] ?? $response['balance']),
+                'ledger_balance' => floatval($response['ledger_balance'] ?? $response['balance']),
+            ];
+        }
+
+        return new WP_Error(
+            'fintava_balance_error',
+            $response['message'] ?? __('Could not retrieve merchant balance', 'matrix-mlm')
+        );
+    }
+
+    /**
+     * Merchant transfer - Credit a bank account from merchant wallet
+     * POST /bank/credit/merchant
+     * 
+     * This is the actual payout endpoint that debits the merchant's Fintava wallet
+     * and credits the recipient's bank account.
+     * 
+     * @param array $transfer_data Transfer parameters
+     * @return array|WP_Error Transfer result or error
+     */
+    public function merchant_bank_credit($transfer_data) {
+        $required_fields = ['amount', 'account_number', 'bank_code'];
+        foreach ($required_fields as $field) {
+            if (empty($transfer_data[$field])) {
+                return new WP_Error('missing_field', sprintf(__('Missing required field: %s', 'matrix-mlm'), $field));
+            }
+        }
+
+        $payload = [
+            'amount' => floatval($transfer_data['amount']),
+            'account_number' => sanitize_text_field($transfer_data['account_number']),
+            'bank_code' => sanitize_text_field($transfer_data['bank_code']),
+        ];
+
+        // Optional fields commonly accepted by the API
+        if (!empty($transfer_data['narration'])) {
+            $payload['narration'] = sanitize_text_field($transfer_data['narration']);
+        }
+        if (!empty($transfer_data['reference'])) {
+            $payload['reference'] = sanitize_text_field($transfer_data['reference']);
+        }
+        if (!empty($transfer_data['account_name'])) {
+            $payload['account_name'] = sanitize_text_field($transfer_data['account_name']);
+        }
+        if (!empty($transfer_data['bank_name'])) {
+            $payload['bank_name'] = sanitize_text_field($transfer_data['bank_name']);
+        }
+        if (!empty($transfer_data['currency'])) {
+            $payload['currency'] = sanitize_text_field($transfer_data['currency']);
+        }
+
+        $response = $this->make_request('POST', '/bank/credit/merchant', $payload);
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        if (isset($response['status']) && $response['status'] === true) {
+            return [
+                'success' => true,
+                'transfer_id' => $response['data']['id'] ?? $response['data']['transfer_id'] ?? null,
+                'reference' => $response['data']['reference'] ?? ($transfer_data['reference'] ?? ''),
+                'status' => $response['data']['status'] ?? 'pending',
+                'message' => $response['message'] ?? __('Merchant transfer initiated successfully', 'matrix-mlm'),
+            ];
+        }
+
+        return new WP_Error(
+            'fintava_merchant_transfer_error',
+            $response['message'] ?? __('Merchant transfer failed', 'matrix-mlm')
         );
     }
 
@@ -374,8 +472,8 @@ class Matrix_MLM_Fintava {
 
         $payout_id = $wpdb->insert_id;
 
-        // Initiate transfer via Fintava API
-        $result = $this->initiate_transfer([
+        // Initiate transfer via Fintava API (merchant bank credit)
+        $result = $this->merchant_bank_credit([
             'amount' => $amount,
             'account_number' => $account_number,
             'bank_code' => $bank_code,
@@ -483,6 +581,25 @@ class Matrix_MLM_Fintava {
             'status' => $payout->status,
             'created_at' => $payout->created_at,
         ]);
+    }
+
+    /**
+     * AJAX: Get merchant wallet balance (admin only)
+     */
+    public function ajax_get_merchant_balance() {
+        check_ajax_referer('matrix_mlm_nonce', 'nonce');
+
+        if (!current_user_can('manage_matrix_mlm')) {
+            wp_send_json_error(['message' => __('Unauthorized', 'matrix-mlm')]);
+        }
+
+        $balance = $this->get_merchant_balance();
+
+        if (is_wp_error($balance)) {
+            wp_send_json_error(['message' => $balance->get_error_message()]);
+        }
+
+        wp_send_json_success(['balance' => $balance]);
     }
 
     // =========================================================================

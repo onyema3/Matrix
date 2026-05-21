@@ -178,28 +178,50 @@ class Matrix_MLM_Admin_Settings {
     <?php }
 
     private function render_fintava_tab() { ?>
-        <h2><?php _e('Fintava Bank Payout Settings', 'matrix-mlm'); ?></h2>
-        <p class="description"><?php _e('Configure Fintava API for instant bank payouts. Users can transfer from their wallet directly to their bank account.', 'matrix-mlm'); ?></p>
+        <h2><?php _e('Fintava Pay - Merchant Settings', 'matrix-mlm'); ?></h2>
+        <p class="description"><?php _e('Configure Fintava Pay API for bank payouts. Users transfer from their Matrix wallet to their Fintava wallet (or any bank account) via the merchant credit endpoint.', 'matrix-mlm'); ?></p>
         
+        <?php
+        // Show merchant balance if configured
+        $fintava = new Matrix_MLM_Fintava();
+        if ($fintava->is_active()):
+            $balance = $fintava->get_merchant_balance();
+            if (!is_wp_error($balance)):
+        ?>
+        <div style="background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 16px 20px; margin-bottom: 20px;">
+            <h3 style="margin: 0 0 8px; color: #065f46;"><?php _e('Merchant Wallet Balance', 'matrix-mlm'); ?></h3>
+            <p style="font-size: 28px; font-weight: 700; color: #059669; margin: 0;">
+                <?php echo get_option('matrix_mlm_currency_symbol', '₦') . number_format($balance['available_balance'] ?? $balance['balance'] ?? 0, 2); ?>
+            </p>
+            <small style="color: #065f46;"><?php _e('Available for payouts', 'matrix-mlm'); ?></small>
+        </div>
+            <?php endif; ?>
+        <?php endif; ?>
+
         <table class="form-table">
             <tr><th><?php _e('Enable Fintava Payout', 'matrix-mlm'); ?></th>
-                <td><label><input type="checkbox" name="matrix_mlm_fintava_enabled" value="1" <?php checked(get_option('matrix_mlm_fintava_enabled', 0)); ?>> <?php _e('Allow users to make bank payouts via Fintava', 'matrix-mlm'); ?></label></td></tr>
-            <tr><th><?php _e('Environment', 'matrix-mlm'); ?></th>
-                <td><select name="matrix_mlm_fintava_environment">
-                    <option value="sandbox" <?php selected(get_option('matrix_mlm_fintava_environment', 'sandbox'), 'sandbox'); ?>><?php _e('Sandbox (Test)', 'matrix-mlm'); ?></option>
-                    <option value="live" <?php selected(get_option('matrix_mlm_fintava_environment'), 'live'); ?>><?php _e('Live (Production)', 'matrix-mlm'); ?></option>
-                </select></td></tr>
-            <tr><th><?php _e('Public Key', 'matrix-mlm'); ?></th>
-                <td><input type="text" name="matrix_mlm_fintava_public_key" class="regular-text" value="<?php echo esc_attr(get_option('matrix_mlm_fintava_public_key', '')); ?>"></td></tr>
+                <td><label><input type="checkbox" name="matrix_mlm_fintava_enabled" value="1" <?php checked(get_option('matrix_mlm_fintava_enabled', 0)); ?>> <?php _e('Allow users to make bank payouts via Fintava Pay', 'matrix-mlm'); ?></label></td></tr>
             <tr><th><?php _e('Secret Key', 'matrix-mlm'); ?></th>
                 <td><input type="password" name="matrix_mlm_fintava_secret_key" class="regular-text" value="<?php echo esc_attr(get_option('matrix_mlm_fintava_secret_key', '')); ?>">
-                <p class="description"><?php _e('Get your API keys from the Fintava dashboard.', 'matrix-mlm'); ?></p></td></tr>
+                <p class="description"><?php _e('Bearer token for API authentication. Get this from your Fintava Pay dashboard.', 'matrix-mlm'); ?></p></td></tr>
+            <tr><th><?php _e('Public Key', 'matrix-mlm'); ?></th>
+                <td><input type="text" name="matrix_mlm_fintava_public_key" class="regular-text" value="<?php echo esc_attr(get_option('matrix_mlm_fintava_public_key', '')); ?>"></td></tr>
             <tr><th><?php _e('Webhook Secret', 'matrix-mlm'); ?></th>
                 <td><input type="text" name="matrix_mlm_fintava_webhook_secret" class="regular-text" value="<?php echo esc_attr(get_option('matrix_mlm_fintava_webhook_secret', '')); ?>">
                 <p class="description"><?php _e('Webhook URL:', 'matrix-mlm'); ?> <code><?php echo rest_url('matrix-mlm/v1/fintava/webhook'); ?></code></p></td></tr>
-            <tr><th><?php _e('Base URL (Optional)', 'matrix-mlm'); ?></th>
-                <td><input type="url" name="matrix_mlm_fintava_base_url" class="regular-text" value="<?php echo esc_attr(get_option('matrix_mlm_fintava_base_url', '')); ?>" placeholder="https://api.fintava.com/v1">
-                <p class="description"><?php _e('Leave empty to use the default URL based on environment.', 'matrix-mlm'); ?></p></td></tr>
+            <tr><th><?php _e('API Base URL', 'matrix-mlm'); ?></th>
+                <td><input type="url" name="matrix_mlm_fintava_base_url" class="regular-text" value="<?php echo esc_attr(get_option('matrix_mlm_fintava_base_url', '')); ?>" placeholder="https://dev.fintavapay.com/api/dev">
+                <p class="description"><?php _e('Leave empty to use default: https://dev.fintavapay.com/api/dev', 'matrix-mlm'); ?></p></td></tr>
+        </table>
+
+        <h3><?php _e('API Endpoints Used', 'matrix-mlm'); ?></h3>
+        <table class="wp-list-table widefat fixed striped" style="max-width: 600px;">
+            <thead><tr><th><?php _e('Action', 'matrix-mlm'); ?></th><th><?php _e('Endpoint', 'matrix-mlm'); ?></th></tr></thead>
+            <tbody>
+                <tr><td><?php _e('Merchant Balance', 'matrix-mlm'); ?></td><td><code>GET /merchant/balance</code></td></tr>
+                <tr><td><?php _e('Bank Credit (Payout)', 'matrix-mlm'); ?></td><td><code>POST /bank/credit/merchant</code></td></tr>
+                <tr><td><?php _e('Generate Virtual Wallet', 'matrix-mlm'); ?></td><td><code>POST /virtual-wallet/generate</code></td></tr>
+            </tbody>
         </table>
 
         <h3><?php _e('Payout Limits & Charges', 'matrix-mlm'); ?></h3>
@@ -249,7 +271,7 @@ class Matrix_MLM_Admin_Settings {
                 $settings = ['matrix_mlm_livechat_enabled', 'matrix_mlm_livechat_code'];
                 break;
             case 'fintava':
-                $settings = ['matrix_mlm_fintava_enabled', 'matrix_mlm_fintava_environment', 'matrix_mlm_fintava_public_key', 'matrix_mlm_fintava_secret_key', 'matrix_mlm_fintava_webhook_secret', 'matrix_mlm_fintava_base_url', 'matrix_mlm_fintava_min_payout', 'matrix_mlm_fintava_max_payout', 'matrix_mlm_fintava_charge_type', 'matrix_mlm_fintava_charge_value'];
+                $settings = ['matrix_mlm_fintava_enabled', 'matrix_mlm_fintava_public_key', 'matrix_mlm_fintava_secret_key', 'matrix_mlm_fintava_webhook_secret', 'matrix_mlm_fintava_base_url', 'matrix_mlm_fintava_min_payout', 'matrix_mlm_fintava_max_payout', 'matrix_mlm_fintava_charge_type', 'matrix_mlm_fintava_charge_value'];
                 break;
         }
 
