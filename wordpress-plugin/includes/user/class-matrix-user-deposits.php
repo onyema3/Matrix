@@ -9,6 +9,107 @@ if (!defined('ABSPATH')) {
 
 class Matrix_MLM_User_Deposits {
 
+    /**
+     * Handle payment verification when user returns from gateway
+     * Called on page load when ?status=verify is present
+     */
+    public function maybe_verify_payment() {
+        if (!isset($_GET['status']) || $_GET['status'] !== 'verify') {
+            return null;
+        }
+
+        $gateway = sanitize_text_field($_GET['gateway'] ?? '');
+        $result = null;
+
+        switch ($gateway) {
+            case 'paystack':
+                $reference = sanitize_text_field($_GET['reference'] ?? '');
+                if (!empty($reference)) {
+                    $result = $this->verify_paystack_payment($reference);
+                }
+                break;
+
+            case 'flutterwave':
+                $tx_ref = sanitize_text_field($_GET['tx_ref'] ?? '');
+                $status = sanitize_text_field($_GET['status'] ?? '');
+                $transaction_id = sanitize_text_field($_GET['transaction_id'] ?? '');
+                if (!empty($tx_ref)) {
+                    $result = $this->verify_flutterwave_payment($tx_ref, $transaction_id);
+                }
+                break;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Verify Paystack payment on user return
+     */
+    private function verify_paystack_payment($reference) {
+        global $wpdb;
+
+        // Check if already completed
+        $deposit = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}matrix_deposits WHERE transaction_id = %s",
+            $reference
+        ));
+
+        if (!$deposit) {
+            return ['status' => 'error', 'message' => __('Deposit not found', 'matrix-mlm')];
+        }
+
+        if ($deposit->status === 'completed') {
+            return ['status' => 'success', 'message' => __('Payment already confirmed! Your wallet has been credited.', 'matrix-mlm')];
+        }
+
+        // Verify with Paystack API
+        $paystack = new Matrix_MLM_Paystack();
+        $verify_result = $paystack->verify_payment($reference);
+
+        if ($verify_result instanceof WP_REST_Response) {
+            $response_data = $verify_result->get_data();
+            if (isset($response_data['status']) && $response_data['status'] === 'success') {
+                return ['status' => 'success', 'message' => __('Payment verified successfully! Your wallet has been credited.', 'matrix-mlm')];
+            }
+        }
+
+        return ['status' => 'pending', 'message' => __('Payment is being processed. Your wallet will be credited once confirmed.', 'matrix-mlm')];
+    }
+
+    /**
+     * Verify Flutterwave payment on user return
+     */
+    private function verify_flutterwave_payment($tx_ref, $transaction_id = '') {
+        global $wpdb;
+
+        // Check if already completed
+        $deposit = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}matrix_deposits WHERE transaction_id = %s",
+            $tx_ref
+        ));
+
+        if (!$deposit) {
+            return ['status' => 'error', 'message' => __('Deposit not found', 'matrix-mlm')];
+        }
+
+        if ($deposit->status === 'completed') {
+            return ['status' => 'success', 'message' => __('Payment already confirmed! Your wallet has been credited.', 'matrix-mlm')];
+        }
+
+        // Verify with Flutterwave API
+        $flutterwave = new Matrix_MLM_Flutterwave();
+        $verify_result = $flutterwave->verify_payment($tx_ref);
+
+        if ($verify_result instanceof WP_REST_Response) {
+            $response_data = $verify_result->get_data();
+            if (isset($response_data['status']) && $response_data['status'] === 'success') {
+                return ['status' => 'success', 'message' => __('Payment verified successfully! Your wallet has been credited.', 'matrix-mlm')];
+            }
+        }
+
+        return ['status' => 'pending', 'message' => __('Payment is being processed. Your wallet will be credited once confirmed.', 'matrix-mlm')];
+    }
+
     public function render_deposit_form($user_id) {
         global $wpdb;
         $gateways = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}matrix_gateways WHERE status = 1");
