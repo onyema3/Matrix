@@ -627,8 +627,12 @@ class Matrix_MLM_Fintava {
             return new WP_REST_Response(['status' => 'error', 'message' => 'Invalid payload'], 400);
         }
 
-        $event_type = $event['event'] ?? '';
+        // Support both 'event' and 'type' keys for event identification
+        $event_type = $event['event'] ?? $event['type'] ?? '';
         $data = $event['data'] ?? [];
+
+        // Log webhook event for debugging/auditing
+        $this->log_webhook_event($event_type, $data, $signature);
 
         switch ($event_type) {
             case 'transfer.success':
@@ -638,6 +642,16 @@ class Matrix_MLM_Fintava {
             case 'transfer.failed':
             case 'transfer.reversed':
                 $this->handle_transfer_failure($data);
+                break;
+            case 'wallet_to_wallet_transfer_v2':
+                $this->handle_wallet_to_wallet_transfer($data);
+                break;
+            case 'account_funded':
+                $this->handle_account_funded($data);
+                break;
+            default:
+                // Unknown event type - log and acknowledge
+                error_log(sprintf('[Matrix Fintava Webhook] Unhandled event type: %s', $event_type));
                 break;
         }
 
@@ -731,6 +745,253 @@ class Matrix_MLM_Fintava {
             'fintava_payout_failed',
             sprintf(__('Bank payout FAILED and refunded. Ref: %s, Reason: %s', 'matrix-mlm'), $reference, $reason)
         );
+    }
+
+    // =========================================================================
+    // INCOMING PAYMENT WEBHOOK HANDLERS
+    // =========================================================================
+
+    /**
+     * Handle wallet-to-wallet transfer webhook (wallet_to_wallet_transfer_v2)
+     * 
+     * Triggered when a user receives funds via wallet-to-wallet transfer on Fintava.
+     * Maps the recipient virtual wallet to a Matrix user and credits their balance.
+     */
+    private function handle_wallet_to_wallet_transfer($data) {
+        global $wpdb;
+
+        $reference = $data['reference'] ?? $data['transaction_reference'] ?? '';
+        $amount = floatval($data['amount'] ?? 0);
+        $recipient_account = $data['recipient_account_number'] ?? $data['recipient_wallet'] ?? $data['account_number'] ?? '';
+        $sender_name = $data['sender_name'] ?? $data['sender'] ?? __('External Wallet', 'matrix-mlm');
+        $narration = $data['narration'] ?? $data['description'] ?? '';
+        $currency = $data['currency'] ?? 'NGN';
+
+        if (empty($reference) || $amount <= 0 || empty($recipient_account)) {
+            error_log('[Matrix Fintava Webhook] wallet_to_wallet_transfer_v2: Missing required data - ref: ' . $reference . ', amount: ' . $amount . ', account: ' . $recipient_account);
+            return;
+        }
+
+        // Check for duplicate processing
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$wpdb->prefix}matrix_deposits WHERE transaction_id = %s AND status = 'completed'",
+            $reference
+        ));
+
+        if ($existing) {
+            error_log('[Matrix Fintava Webhook] wallet_to_wallet_transfer_v2: Duplicate reference - ' . $reference);
+            return;
+        }
+
+        // Find the user by their virtual wallet account number
+        $wallet_record = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}matrix_fintava_wallets WHERE account_number = %s AND status = 'active'",
+            $recipient_account
+        ));
+
+        if (!$wallet_record) {
+            error_log('[Matrix Fintava Webhook] wallet_to_wallet_transfer_v2: No user found for account ' . $recipient_account . ' (ref: ' . $reference . ')');
+            return;
+        }
+
+        $user_id = $wallet_record->user_id;
+
+        // Verify user is active
+        if (!Matrix_MLM_User::is_active($user_id)) {
+            error_log('[Matrix Fintava Webhook] wallet_to_wallet_transfer_v2: User ' . $user_id . ' is not active (ref: ' . $reference . ')');
+            return;
+        }
+
+        // Record the deposit
+        $wpdb->insert($wpdb->prefix . 'matrix_deposits', [
+            'user_id' => $user_id,
+            'amount' => $amount,
+            'charge' => 0.00,
+            'net_amount' => $amount,
+            'gateway' => 'fintava_wallet_transfer',
+            'currency' => $currency,
+            'transaction_id' => $reference,
+            'gateway_response' => json_encode([
+                'type' => 'wallet_to_wallet_transfer_v2',
+                'sender_name' => $sender_name,
+                'narration' => $narration,
+                'recipient_account' => $recipient_account,
+            ]),
+            'status' => 'completed',
+            'created_at' => current_time('mysql'),
+        ]);
+
+        // Credit the user's Matrix wallet
+        $wallet = new Matrix_MLM_Wallet();
+        $description = sprintf(
+            __('Wallet transfer received from %s%s', 'matrix-mlm'),
+            $sender_name,
+            !empty($narration) ? ' - ' . $narration : ''
+        );
+        $wallet->credit($user_id, $amount, 'fintava_wallet_transfer', $description, $reference);
+
+        // Send notification to user
+        Matrix_MLM_Notifications::send_deposit_notification($user_id, $amount, 'completed');
+
+        // Notify admin
+        $currency_symbol = get_option('matrix_mlm_currency_symbol', '₦');
+        $user = get_userdata($user_id);
+        Matrix_MLM_Notifications::send_admin_notification(
+            'fintava_wallet_transfer',
+            sprintf(
+                __('Wallet transfer received: %s%s to %s (Account: %s, From: %s). Ref: %s', 'matrix-mlm'),
+                $currency_symbol,
+                number_format($amount, 2),
+                $user ? $user->user_login : "User #$user_id",
+                $recipient_account,
+                $sender_name,
+                $reference
+            )
+        );
+
+        do_action('matrix_fintava_wallet_transfer_received', $user_id, $amount, $data);
+    }
+
+    /**
+     * Handle account funded webhook (account_funded)
+     * 
+     * Triggered when a user's virtual account receives a bank transfer/deposit.
+     * Maps the funded virtual account to a Matrix user and credits their balance.
+     */
+    private function handle_account_funded($data) {
+        global $wpdb;
+
+        $reference = $data['reference'] ?? $data['transaction_reference'] ?? $data['session_id'] ?? '';
+        $amount = floatval($data['amount'] ?? 0);
+        $account_number = $data['account_number'] ?? $data['virtual_account_number'] ?? '';
+        $sender_name = $data['sender_name'] ?? $data['payer_name'] ?? $data['originator_name'] ?? __('Bank Transfer', 'matrix-mlm');
+        $sender_bank = $data['sender_bank'] ?? $data['payer_bank'] ?? $data['originator_bank'] ?? '';
+        $narration = $data['narration'] ?? $data['description'] ?? $data['remark'] ?? '';
+        $currency = $data['currency'] ?? 'NGN';
+
+        if (empty($reference) || $amount <= 0 || empty($account_number)) {
+            error_log('[Matrix Fintava Webhook] account_funded: Missing required data - ref: ' . $reference . ', amount: ' . $amount . ', account: ' . $account_number);
+            return;
+        }
+
+        // Check for duplicate processing
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$wpdb->prefix}matrix_deposits WHERE transaction_id = %s AND status = 'completed'",
+            $reference
+        ));
+
+        if ($existing) {
+            error_log('[Matrix Fintava Webhook] account_funded: Duplicate reference - ' . $reference);
+            return;
+        }
+
+        // Find the user by their virtual wallet account number
+        $wallet_record = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}matrix_fintava_wallets WHERE account_number = %s AND status = 'active'",
+            $account_number
+        ));
+
+        if (!$wallet_record) {
+            error_log('[Matrix Fintava Webhook] account_funded: No user found for account ' . $account_number . ' (ref: ' . $reference . ')');
+            return;
+        }
+
+        $user_id = $wallet_record->user_id;
+
+        // Verify user is active
+        if (!Matrix_MLM_User::is_active($user_id)) {
+            error_log('[Matrix Fintava Webhook] account_funded: User ' . $user_id . ' is not active (ref: ' . $reference . ')');
+            return;
+        }
+
+        // Record the deposit
+        $wpdb->insert($wpdb->prefix . 'matrix_deposits', [
+            'user_id' => $user_id,
+            'amount' => $amount,
+            'charge' => 0.00,
+            'net_amount' => $amount,
+            'gateway' => 'fintava_account_funded',
+            'currency' => $currency,
+            'transaction_id' => $reference,
+            'gateway_response' => json_encode([
+                'type' => 'account_funded',
+                'sender_name' => $sender_name,
+                'sender_bank' => $sender_bank,
+                'narration' => $narration,
+                'account_number' => $account_number,
+            ]),
+            'status' => 'completed',
+            'created_at' => current_time('mysql'),
+        ]);
+
+        // Credit the user's Matrix wallet
+        $wallet = new Matrix_MLM_Wallet();
+        $description = sprintf(
+            __('Account funded by %s%s%s', 'matrix-mlm'),
+            $sender_name,
+            !empty($sender_bank) ? ' (' . $sender_bank . ')' : '',
+            !empty($narration) ? ' - ' . $narration : ''
+        );
+        $wallet->credit($user_id, $amount, 'fintava_account_funded', $description, $reference);
+
+        // Send notification to user
+        Matrix_MLM_Notifications::send_deposit_notification($user_id, $amount, 'completed');
+
+        // Notify admin
+        $currency_symbol = get_option('matrix_mlm_currency_symbol', '₦');
+        $user = get_userdata($user_id);
+        Matrix_MLM_Notifications::send_admin_notification(
+            'fintava_account_funded',
+            sprintf(
+                __('Account funded: %s%s deposited to %s (Account: %s, From: %s%s). Ref: %s', 'matrix-mlm'),
+                $currency_symbol,
+                number_format($amount, 2),
+                $user ? $user->user_login : "User #$user_id",
+                $account_number,
+                $sender_name,
+                !empty($sender_bank) ? ' via ' . $sender_bank : '',
+                $reference
+            )
+        );
+
+        do_action('matrix_fintava_account_funded', $user_id, $amount, $data);
+    }
+
+    // =========================================================================
+    // WEBHOOK LOGGING
+    // =========================================================================
+
+    /**
+     * Log webhook events for debugging and auditing
+     * 
+     * Stores webhook events in the database for troubleshooting and audit trail.
+     */
+    private function log_webhook_event($event_type, $data, $signature) {
+        global $wpdb;
+
+        $table = $wpdb->prefix . 'matrix_fintava_webhook_logs';
+
+        // Check if logging table exists (graceful fallback)
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== $table) {
+            // Fallback to error_log if table doesn't exist
+            error_log(sprintf(
+                '[Matrix Fintava Webhook] Event: %s | Reference: %s | Data: %s',
+                $event_type,
+                $data['reference'] ?? $data['transaction_reference'] ?? 'N/A',
+                json_encode($data)
+            ));
+            return;
+        }
+
+        $wpdb->insert($table, [
+            'event_type' => $event_type,
+            'reference' => $data['reference'] ?? $data['transaction_reference'] ?? '',
+            'payload' => json_encode($data),
+            'signature' => $signature ?? '',
+            'ip_address' => $_SERVER['REMOTE_ADDR'] ?? '',
+            'status' => 'received',
+            'created_at' => current_time('mysql'),
+        ]);
     }
 
     // =========================================================================
