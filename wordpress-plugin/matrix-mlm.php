@@ -61,6 +61,7 @@ require_once MATRIX_MLM_PLUGIN_DIR . 'gateways/class-matrix-paystack.php';
 require_once MATRIX_MLM_PLUGIN_DIR . 'gateways/class-matrix-flutterwave.php';
 require_once MATRIX_MLM_PLUGIN_DIR . 'gateways/class-matrix-fintava.php';
 require_once MATRIX_MLM_PLUGIN_DIR . 'gateways/class-matrix-fintava-card.php';
+require_once MATRIX_MLM_PLUGIN_DIR . 'gateways/class-matrix-fintava-billing.php';
 
 // Admin
 if (is_admin()) {
@@ -88,6 +89,7 @@ require_once MATRIX_MLM_PLUGIN_DIR . 'includes/user/class-matrix-user-tickets.ph
 require_once MATRIX_MLM_PLUGIN_DIR . 'includes/user/class-matrix-user-bank-payout.php';
 require_once MATRIX_MLM_PLUGIN_DIR . 'includes/user/class-matrix-user-virtual-wallet.php';
 require_once MATRIX_MLM_PLUGIN_DIR . 'includes/user/class-matrix-user-card.php';
+require_once MATRIX_MLM_PLUGIN_DIR . 'includes/user/class-matrix-user-billing.php';
 
 // Activation/Deactivation hooks
 register_activation_hook(__FILE__, ['Matrix_MLM_Activator', 'activate']);
