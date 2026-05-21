@@ -272,6 +272,24 @@ class Matrix_MLM_Database {
         ) $charset_collate;";
         dbDelta($sql_subscribers);
 
+        // Fintava Webhook Logs
+        $table_webhook_logs = $wpdb->prefix . 'matrix_fintava_webhook_logs';
+        $sql_webhook_logs = "CREATE TABLE $table_webhook_logs (
+            id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            event_type varchar(100) NOT NULL,
+            reference varchar(255) DEFAULT NULL,
+            payload longtext,
+            signature varchar(255) DEFAULT NULL,
+            ip_address varchar(45) DEFAULT NULL,
+            status varchar(20) NOT NULL DEFAULT 'received',
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY event_type (event_type),
+            KEY reference (reference),
+            KEY created_at (created_at)
+        ) $charset_collate;";
+        dbDelta($sql_webhook_logs);
+
         // Pages/Content
         $table_pages = $wpdb->prefix . 'matrix_pages';
         $sql_pages = "CREATE TABLE $table_pages (
@@ -304,7 +322,7 @@ class Matrix_MLM_Database {
             'matrix_deposits', 'matrix_withdrawals', 'matrix_commissions',
             'matrix_epins', 'matrix_tickets', 'matrix_ticket_messages',
             'matrix_gateways', 'matrix_user_meta', 'matrix_transfers',
-            'matrix_subscribers', 'matrix_pages'
+            'matrix_subscribers', 'matrix_pages', 'matrix_fintava_webhook_logs'
         ];
 
         foreach ($tables as $table) {
