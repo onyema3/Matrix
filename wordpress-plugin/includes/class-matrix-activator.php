@@ -19,6 +19,9 @@ class Matrix_MLM_Activator {
         // Create Fintava card table
         Matrix_MLM_Fintava_Card::create_table();
 
+        // Create billing transactions table
+        Matrix_MLM_Fintava_Billing::create_table();
+
         // Seed default data
         Matrix_MLM_Database::seed_defaults();
 
