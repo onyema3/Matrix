@@ -59,6 +59,10 @@ class Matrix_MLM_Fintava {
         add_action('wp_ajax_matrix_fintava_initiate_transfer', [$this, 'ajax_initiate_transfer']);
         add_action('wp_ajax_matrix_fintava_check_status', [$this, 'ajax_check_transfer_status']);
 
+        // Virtual Wallet AJAX handlers
+        add_action('wp_ajax_matrix_fintava_create_virtual_wallet', [$this, 'ajax_create_virtual_wallet']);
+        add_action('wp_ajax_matrix_fintava_get_virtual_wallet', [$this, 'ajax_get_virtual_wallet']);
+
         // REST API endpoint for webhook callbacks
         add_action('rest_api_init', [$this, 'register_webhook_routes']);
     }
@@ -707,6 +711,281 @@ class Matrix_MLM_Fintava {
         ));
     }
 
+    // =========================================================================
+    // VIRTUAL WALLET API METHODS
+    // =========================================================================
+
+    /**
+     * Generate a virtual wallet/account for a user
+     * POST /virtual-wallet/generate
+     * 
+     * @param array $customer_data Customer details for wallet creation
+     * @return array|WP_Error Wallet details or error
+     */
+    public function generate_virtual_wallet($customer_data) {
+        $required_fields = ['first_name', 'last_name', 'email', 'phone'];
+        foreach ($required_fields as $field) {
+            if (empty($customer_data[$field])) {
+                return new WP_Error('missing_field', sprintf(__('Missing required field: %s', 'matrix-mlm'), $field));
+            }
+        }
+
+        $payload = [
+            'first_name' => sanitize_text_field($customer_data['first_name']),
+            'last_name' => sanitize_text_field($customer_data['last_name']),
+            'email' => sanitize_email($customer_data['email']),
+            'phone' => sanitize_text_field($customer_data['phone']),
+            'currency' => $customer_data['currency'] ?? 'NGN',
+        ];
+
+        // Optional fields
+        if (!empty($customer_data['bvn'])) {
+            $payload['bvn'] = sanitize_text_field($customer_data['bvn']);
+        }
+        if (!empty($customer_data['nin'])) {
+            $payload['nin'] = sanitize_text_field($customer_data['nin']);
+        }
+        if (!empty($customer_data['date_of_birth'])) {
+            $payload['date_of_birth'] = sanitize_text_field($customer_data['date_of_birth']);
+        }
+        if (!empty($customer_data['gender'])) {
+            $payload['gender'] = sanitize_text_field($customer_data['gender']);
+        }
+        if (!empty($customer_data['address'])) {
+            $payload['address'] = sanitize_text_field($customer_data['address']);
+        }
+        if (!empty($customer_data['reference'])) {
+            $payload['reference'] = sanitize_text_field($customer_data['reference']);
+        }
+
+        $response = $this->make_request('POST', '/virtual-wallet/generate', $payload);
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        if (isset($response['status']) && $response['status'] === true && isset($response['data'])) {
+            return [
+                'success' => true,
+                'wallet_id' => $response['data']['wallet_id'] ?? $response['data']['id'] ?? null,
+                'account_number' => $response['data']['account_number'] ?? '',
+                'account_name' => $response['data']['account_name'] ?? ($customer_data['first_name'] . ' ' . $customer_data['last_name']),
+                'bank_name' => $response['data']['bank_name'] ?? $response['data']['bank'] ?? 'Fintava',
+                'bank_code' => $response['data']['bank_code'] ?? null,
+                'currency' => $response['data']['currency'] ?? 'NGN',
+                'status' => $response['data']['status'] ?? 'active',
+            ];
+        }
+
+        return new WP_Error(
+            'fintava_wallet_error',
+            $response['message'] ?? __('Failed to generate virtual wallet', 'matrix-mlm')
+        );
+    }
+
+    /**
+     * Get virtual wallet details
+     * GET /virtual-wallet/:wallet_id
+     * 
+     * @param string $wallet_id The wallet ID
+     * @return array|WP_Error Wallet details or error
+     */
+    public function get_virtual_wallet_details($wallet_id) {
+        $response = $this->make_request('GET', '/virtual-wallet/' . $wallet_id);
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        if (isset($response['status']) && $response['status'] === true && isset($response['data'])) {
+            return $response['data'];
+        }
+
+        return new WP_Error(
+            'fintava_wallet_error',
+            $response['message'] ?? __('Could not retrieve wallet details', 'matrix-mlm')
+        );
+    }
+
+    /**
+     * Get user's virtual wallet from local database
+     */
+    public function get_user_wallet($user_id) {
+        global $wpdb;
+        return $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}matrix_fintava_wallets WHERE user_id = %d AND status = 'active'",
+            $user_id
+        ));
+    }
+
+    /**
+     * Check if user already has a virtual wallet
+     */
+    public function user_has_wallet($user_id) {
+        global $wpdb;
+        return (bool) $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$wpdb->prefix}matrix_fintava_wallets WHERE user_id = %d AND status = 'active'",
+            $user_id
+        ));
+    }
+
+    // =========================================================================
+    // VIRTUAL WALLET AJAX HANDLERS
+    // =========================================================================
+
+    /**
+     * AJAX: Create virtual wallet for the current user
+     */
+    public function ajax_create_virtual_wallet() {
+        check_ajax_referer('matrix_mlm_nonce', 'nonce');
+
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            wp_send_json_error(['message' => __('Authentication required', 'matrix-mlm')]);
+        }
+
+        if (!Matrix_MLM_User::is_active($user_id)) {
+            wp_send_json_error(['message' => __('Your account is suspended', 'matrix-mlm')]);
+        }
+
+        // Check if user already has a wallet
+        if ($this->user_has_wallet($user_id)) {
+            wp_send_json_error(['message' => __('You already have a virtual wallet. Only one wallet per user is allowed.', 'matrix-mlm')]);
+        }
+
+        // Validate required inputs
+        $first_name = sanitize_text_field($_POST['first_name'] ?? '');
+        $last_name = sanitize_text_field($_POST['last_name'] ?? '');
+        $email = sanitize_email($_POST['email'] ?? '');
+        $phone = sanitize_text_field($_POST['phone'] ?? '');
+        $bvn = sanitize_text_field($_POST['bvn'] ?? '');
+        $date_of_birth = sanitize_text_field($_POST['date_of_birth'] ?? '');
+        $gender = sanitize_text_field($_POST['gender'] ?? '');
+
+        if (empty($first_name) || empty($last_name)) {
+            wp_send_json_error(['message' => __('First name and last name are required', 'matrix-mlm')]);
+        }
+
+        if (empty($email) || !is_email($email)) {
+            wp_send_json_error(['message' => __('A valid email address is required', 'matrix-mlm')]);
+        }
+
+        if (empty($phone)) {
+            wp_send_json_error(['message' => __('Phone number is required', 'matrix-mlm')]);
+        }
+
+        // BVN validation (11 digits for Nigeria)
+        if (!empty($bvn) && !preg_match('/^\d{11}$/', $bvn)) {
+            wp_send_json_error(['message' => __('BVN must be 11 digits', 'matrix-mlm')]);
+        }
+
+        // Generate reference
+        $reference = 'MTX-VW-' . $user_id . '-' . time();
+
+        // Call Fintava API to generate virtual wallet
+        $result = $this->generate_virtual_wallet([
+            'first_name' => $first_name,
+            'last_name' => $last_name,
+            'email' => $email,
+            'phone' => $phone,
+            'bvn' => $bvn,
+            'date_of_birth' => $date_of_birth,
+            'gender' => $gender,
+            'reference' => $reference,
+            'currency' => 'NGN',
+        ]);
+
+        if (is_wp_error($result)) {
+            wp_send_json_error(['message' => $result->get_error_message()]);
+            return;
+        }
+
+        // Store wallet in database
+        global $wpdb;
+        $wpdb->insert($wpdb->prefix . 'matrix_fintava_wallets', [
+            'user_id' => $user_id,
+            'wallet_id' => $result['wallet_id'],
+            'account_number' => $result['account_number'],
+            'account_name' => $result['account_name'],
+            'bank_name' => $result['bank_name'],
+            'bank_code' => $result['bank_code'],
+            'currency' => $result['currency'],
+            'customer_email' => $email,
+            'customer_phone' => $phone,
+            'bvn' => $bvn ?: null,
+            'status' => 'active',
+            'metadata' => json_encode([
+                'first_name' => $first_name,
+                'last_name' => $last_name,
+                'date_of_birth' => $date_of_birth,
+                'gender' => $gender,
+                'reference' => $reference,
+            ]),
+        ]);
+
+        // Send notification
+        Matrix_MLM_Notifications::send_admin_notification(
+            'virtual_wallet_created',
+            sprintf(__('Virtual wallet created for user %s (%s). Account: %s', 'matrix-mlm'),
+                $first_name . ' ' . $last_name, $email, $result['account_number'])
+        );
+
+        wp_send_json_success([
+            'message' => __('Virtual wallet created successfully!', 'matrix-mlm'),
+            'wallet' => [
+                'account_number' => $result['account_number'],
+                'account_name' => $result['account_name'],
+                'bank_name' => $result['bank_name'],
+            ],
+        ]);
+    }
+
+    /**
+     * AJAX: Get current user's virtual wallet details
+     */
+    public function ajax_get_virtual_wallet() {
+        check_ajax_referer('matrix_mlm_nonce', 'nonce');
+
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            wp_send_json_error(['message' => __('Authentication required', 'matrix-mlm')]);
+        }
+
+        $wallet = $this->get_user_wallet($user_id);
+
+        if (!$wallet) {
+            wp_send_json_error(['message' => __('No virtual wallet found', 'matrix-mlm'), 'has_wallet' => false]);
+        }
+
+        // Optionally refresh from API if wallet_id exists
+        if (!empty($wallet->wallet_id)) {
+            $api_details = $this->get_virtual_wallet_details($wallet->wallet_id);
+            if (!is_wp_error($api_details) && isset($api_details['status'])) {
+                // Update local status if changed
+                if ($api_details['status'] !== $wallet->status) {
+                    global $wpdb;
+                    $wpdb->update($wpdb->prefix . 'matrix_fintava_wallets', [
+                        'status' => $api_details['status'],
+                        'updated_at' => current_time('mysql'),
+                    ], ['id' => $wallet->id]);
+                    $wallet->status = $api_details['status'];
+                }
+            }
+        }
+
+        wp_send_json_success([
+            'has_wallet' => true,
+            'wallet' => [
+                'account_number' => $wallet->account_number,
+                'account_name' => $wallet->account_name,
+                'bank_name' => $wallet->bank_name,
+                'currency' => $wallet->currency,
+                'status' => $wallet->status,
+                'created_at' => $wallet->created_at,
+            ],
+        ]);
+    }
+
     /**
      * Create the fintava_payouts database table
      */
@@ -742,5 +1021,30 @@ class Matrix_MLM_Fintava {
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
+
+        // Virtual wallets table
+        $table_wallets = $wpdb->prefix . 'matrix_fintava_wallets';
+        $sql_wallets = "CREATE TABLE $table_wallets (
+            id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            user_id bigint(20) UNSIGNED NOT NULL,
+            wallet_id varchar(100) DEFAULT NULL,
+            account_number varchar(20) NOT NULL,
+            account_name varchar(255) NOT NULL,
+            bank_name varchar(100) NOT NULL DEFAULT 'Fintava',
+            bank_code varchar(20) DEFAULT NULL,
+            currency varchar(5) NOT NULL DEFAULT 'NGN',
+            customer_email varchar(255) DEFAULT NULL,
+            customer_phone varchar(20) DEFAULT NULL,
+            bvn varchar(20) DEFAULT NULL,
+            status enum('active','inactive','frozen','closed') NOT NULL DEFAULT 'active',
+            metadata text,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY user_id (user_id),
+            KEY account_number (account_number),
+            KEY status (status)
+        ) $charset_collate;";
+        dbDelta($sql_wallets);
     }
 }
